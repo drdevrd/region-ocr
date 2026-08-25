@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Region OCR — Select & Extract</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 15px; }
+  #dropzone { border: 2px dashed #999; padding: 30px; text-align: center; color: #666; cursor: pointer; margin-bottom: 15px; }
+  #canvasWrap { position: relative; display: inline-block; max-width: 100%; }
+  #imgCanvas { max-width: 100%; display: block; cursor: crosshair; border: 1px solid #ccc; touch-action: none; }
+  #selBox { position: absolute; border: 2px solid #ff3b30; background: rgba(255,59,48,0.15); display: none; pointer-events: none; }
+  #result { margin-top: 20px; padding: 15px; background: #f5f5f5; border-radius: 6px; white-space: pre-wrap; min-height: 40px; font-size: 15px; }
+  #status { color: #666; font-size: 13px; margin-top: 8px; }
+  button { padding: 8px 16px; margin-top: 10px; cursor: pointer; }
+  .hint { color: #888; font-size: 13px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<h2>Region OCR</h2>
+<p class="hint">Upload an image, then click-drag a box around just the text you want. Only that crop gets OCR'd — no whole-page auto-detection, so accuracy is much better on messy scans/photos.</p>
+
+<label style="font-size:14px;">Language: </label>
+<select id="langSelect">
+  <option value="eng">English</option>
+  <option value="tam" selected>Tamil</option>
+  <option value="tam+eng">Tamil + English</option>
+</select>
+
+<div id="dropzone">Click to upload an image, or drag one here</div>
+<input type="file" id="fileInput" accept="image/*" style="display:none">
+
+<div id="canvasWrap" style="display:none;">
+  <canvas id="imgCanvas"></canvas>
+  <div id="selBox"></div>
+</div>
+
+<div id="status"></div>
+<div id="result"></div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const canvasWrap = document.getElementById('canvasWrap');
+const canvas = document.getElementById('imgCanvas');
+const ctx = canvas.getContext('2d');
+const selBox = document.getElementById('selBox');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+
+let img = new Image();
+let scale = 1;
+let dragging = false, startX, startY;
+
+dropzone.onclick = () => fileInput.click();
+fileInput.onchange = e => loadFile(e.target.files[0]);
+dropzone.ondragover = e => e.preventDefault();
+dropzone.ondrop = e => { e.preventDefault(); loadFile(e.dataTransfer.files[0]); };
+
+function loadFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    img.onload = () => {
+      const maxW = 850;
+      scale = Math.min(1, maxW / img.width);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvasWrap.style.display = 'inline-block';
+      resultEl.textContent = '';
+      statusEl.textContent = 'Drag a box around the text you want to read.';
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function getPos(e) {
+  const r = canvas.getBoundingClientRect();
+  if (e.touches && e.touches.length) {
+    return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+  }
+  if (e.changedTouches && e.changedTouches.length) {
+    return { x: e.changedTouches[0].clientX - r.left, y: e.changedTouches[0].clientY - r.top };
+  }
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function dragStart(e) {
+  e.preventDefault();
+  const p = getPos(e);
+  startX = p.x; startY = p.y;
+  dragging = true;
+  selBox.style.display = 'block';
+  selBox.style.left = startX + 'px';
+  selBox.style.top = startY + 'px';
+  selBox.style.width = '0px';
+  selBox.style.height = '0px';
+}
+
+function dragMove(e) {
+  if (!dragging) return;
+  e.preventDefault();
+  const p = getPos(e);
+  selBox.style.left = Math.min(p.x, startX) + 'px';
+  selBox.style.top = Math.min(p.y, startY) + 'px';
+  selBox.style.width = Math.abs(p.x - startX) + 'px';
+  selBox.style.height = Math.abs(p.y - startY) + 'px';
+}
+
+async function dragEnd(e) {
+  if (!dragging) return;
+  e.preventDefault();
+  dragging = false;
+  const p = getPos(e);
+  const x = Math.min(startX, p.x), y = Math.min(startY, p.y);
+  const w = Math.abs(p.x - startX), h = Math.abs(p.y - startY);
+  if (w < 5 || h < 5) { selBox.style.display = 'none'; return; }
+
+  // Map displayed-canvas coords back to full-res image coords
+  const realX = x / scale, realY = y / scale, realW = w / scale, realH = h / scale;
+
+  // Crop at full resolution, then upscale 2x for better OCR on small text
+  const upscale = 2;
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = realW * upscale;
+  cropCanvas.height = realH * upscale;
+  const cctx = cropCanvas.getContext('2d');
+  cctx.imageSmoothingEnabled = true;
+  cctx.drawImage(img, realX, realY, realW, realH, 0, 0, cropCanvas.width, cropCanvas.height);
+
+  statusEl.textContent = 'Loading Tamil model (first time only, ~5-15MB)...';
+  resultEl.textContent = '';
+  const lang = document.getElementById('langSelect').value;
+  try {
+    const { data } = await Tesseract.recognize(cropCanvas.toDataURL(), lang, {
+      logger: m => {
+        if (m.status && m.progress != null) {
+          statusEl.textContent = m.status + ' ' + Math.round(m.progress * 100) + '%';
+        }
+      }
+    });
+    resultEl.textContent = data.text.trim() || '(no text detected in that region)';
+    statusEl.textContent = 'Done. Drag another box to read a different area.';
+  } catch (err) {
+    statusEl.textContent = 'OCR failed: ' + err.message;
+  }
+}
+
+canvas.addEventListener('mousedown', dragStart);
+canvas.addEventListener('mousemove', dragMove);
+canvas.addEventListener('mouseup', dragEnd);
+canvas.addEventListener('touchstart', dragStart, { passive: false });
+canvas.addEventListener('touchmove', dragMove, { passive: false });
+canvas.addEventListener('touchend', dragEnd, { passive: false });
+</script>
+</body>
+</html>
