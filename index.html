@@ -142,7 +142,16 @@ async function dragEnd(e) {
       }
     });
     resultEl.textContent = data.text.trim() || '(no text detected in that region)';
-    statusEl.textContent = 'Done. Drag another box to read a different area.';
+    if (data.text.trim()) {
+      try {
+        await navigator.clipboard.writeText(data.text.trim());
+        statusEl.textContent = 'Done — copied to clipboard. Drag another box to read a different area.';
+      } catch (copyErr) {
+        statusEl.textContent = 'Done. (Couldn\'t auto-copy — long-press the text above to copy manually.) Drag another box to read a different area.';
+      }
+    } else {
+      statusEl.textContent = 'Done. Drag another box to read a different area.';
+    }
   } catch (err) {
     statusEl.textContent = 'OCR failed: ' + err.message;
   }
