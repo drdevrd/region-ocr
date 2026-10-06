@@ -155,8 +155,12 @@ async function dragEnd(e) {
   // Map displayed-canvas coords back to full-res image coords
   const realX = x / scale, realY = y / scale, realW = w / scale, realH = h / scale;
 
-  // Crop at full resolution, then upscale 3x — Tesseract does much better on bigger glyphs
-  const upscale = 3;
+  resultEl.textContent = '';
+  const engine = document.getElementById('engineSelect').value;
+  const lang = document.getElementById('langSelect').value;
+
+  // Claude Vision prefers original color + resolution; Tesseract needs upscale + binarize
+  const upscale = engine === 'claude' ? 1 : 3;
   const cropCanvas = document.createElement('canvas');
   cropCanvas.width = realW * upscale;
   cropCanvas.height = realH * upscale;
@@ -165,20 +169,18 @@ async function dragEnd(e) {
   cctx.imageSmoothingQuality = 'high';
   cctx.drawImage(img, realX, realY, realW, realH, 0, 0, cropCanvas.width, cropCanvas.height);
 
-  // Preprocess: convert to grayscale and boost contrast — helps on photos vs scans
-  const imgData = cctx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
-  const d = imgData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    // Simple contrast stretch: anything > 170 → white, < 100 → black, linear between
-    const v = gray > 170 ? 255 : gray < 100 ? 0 : (gray - 100) * 255 / 70;
-    d[i] = d[i + 1] = d[i + 2] = v;
+  if (engine !== 'claude') {
+    // Preprocess only for Tesseract: grayscale + contrast stretch
+    const imgData = cctx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const v = gray > 170 ? 255 : gray < 100 ? 0 : (gray - 100) * 255 / 70;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    cctx.putImageData(imgData, 0, 0);
   }
-  cctx.putImageData(imgData, 0, 0);
 
-  resultEl.textContent = '';
-  const engine = document.getElementById('engineSelect').value;
-  const lang = document.getElementById('langSelect').value;
   let data;
   try {
     if (engine === 'claude') {
@@ -263,13 +265,13 @@ async function claudeOCR(canvasEl, sk) {
       'anthropic-dangerous-direct-browser-access': 'true'
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5-20250929',
+      model: 'claude-opus-5-5',
       max_tokens: 2000,
       messages: [{
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-          { type: 'text', text: 'Extract all text from this image exactly as it appears. Preserve Tamil, English, and any other scripts, line by line. Return only the extracted text with no commentary, no quotes, no markdown.' }
+          { type: 'text', text: 'Transcribe every character of text visible in this image, exactly as written. The image may contain Tamil script, English, Hindi/Devanagari, or handwritten text. Preserve line breaks. Preserve all original spelling even if it looks wrong. Do not translate. Do not add commentary, quotes, markdown, or any text that is not in the image. If no text is visible, output only: (none)' }
         ]
       }]
     })
