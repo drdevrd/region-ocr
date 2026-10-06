@@ -27,8 +27,8 @@
   <option value="tam+eng">Tamil + English</option>
 </select>
 
-<div id="dropzone">Click to upload an image, or drag one here</div>
-<input type="file" id="fileInput" accept="image/*" style="display:none">
+<label for="fileInput" id="dropzone" style="display:block;">Tap to pick an image or take a photo</label>
+<input type="file" id="fileInput" accept="image/*" style="position:absolute;left:-9999px;">
 
 <div id="canvasWrap" style="display:none;">
   <canvas id="imgCanvas"></canvas>
@@ -48,32 +48,38 @@ const selBox = document.getElementById('selBox');
 const statusEl = document.getElementById('status');
 const resultEl = document.getElementById('result');
 
-let img = new Image();
+let img = null;
 let scale = 1;
 let dragging = false, startX, startY;
 
-dropzone.onclick = () => fileInput.click();
 fileInput.onchange = e => loadFile(e.target.files[0]);
 dropzone.ondragover = e => e.preventDefault();
 dropzone.ondrop = e => { e.preventDefault(); loadFile(e.dataTransfer.files[0]); };
 
 function loadFile(file) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    img.onload = () => {
-      const maxW = 850;
-      scale = Math.min(1, maxW / img.width);
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      canvasWrap.style.display = 'inline-block';
-      resultEl.textContent = '';
-      statusEl.textContent = 'Drag a box around the text you want to read.';
-    };
-    img.src = e.target.result;
+  if (!file) { statusEl.textContent = 'No file selected.'; return; }
+  statusEl.textContent = 'Loading image (' + Math.round(file.size/1024) + ' KB, ' + (file.type || 'unknown type') + ')...';
+
+  // createObjectURL handles large photos faster than FileReader and uses less memory
+  // (important on mobile Edge, which can silently fail with multi-MB base64 data URLs)
+  const url = URL.createObjectURL(file);
+  img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const maxW = Math.min(window.innerWidth - 30, 1200);
+    scale = Math.min(1, maxW / img.width);
+    canvas.width = img.width * scale;
+    canvas.height = img.height * scale;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    canvasWrap.style.display = 'inline-block';
+    resultEl.textContent = '';
+    statusEl.textContent = 'Drag a box around the text you want to read.';
   };
-  reader.readAsDataURL(file);
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    statusEl.textContent = 'Could not load this image. If it is HEIC (iPhone format), convert to JPG first. Otherwise try a different image.';
+  };
+  img.src = url;
 }
 
 function getPos(e) {
