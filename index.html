@@ -21,12 +21,26 @@
 <h2>Region OCR</h2>
 <p class="hint">Upload an image, then click-drag a box around just the text you want. Only that crop gets OCR'd — no whole-page auto-detection, so accuracy is much better on messy scans/photos.</p>
 
-<label style="font-size:14px;">Language: </label>
-<select id="langSelect">
-  <option value="eng">English</option>
-  <option value="tam">Tamil</option>
-  <option value="tam+eng" selected>Tamil + English</option>
-</select>
+<div style="display:flex; gap:15px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+  <label style="font-size:14px;">Engine:
+    <select id="engineSelect">
+      <option value="tesseract">Tesseract (free, offline)</option>
+      <option value="claude" selected>Claude AI (best accuracy, needs SK)</option>
+    </select>
+  </label>
+  <label style="font-size:14px;" id="langLabel" style="display:none;">Language:
+    <select id="langSelect">
+      <option value="eng">English</option>
+      <option value="tam">Tamil</option>
+      <option value="tam+eng" selected>Tamil + English</option>
+    </select>
+  </label>
+</div>
+<div id="skRow" style="margin-bottom:10px;">
+  <input type="password" id="skInput" placeholder="Paste Claude SK (sk-ant-...)" style="width:280px; max-width:70%; padding:6px; font-size:13px;">
+  <button id="saveSk" style="padding:6px 12px;">Save</button>
+  <span id="skStatus" style="font-size:12px; color:#666; margin-left:8px;"></span>
+</div>
 
 <label for="fileInput" id="dropzone" style="display:block;">Tap to pick an image or take a photo</label>
 <input type="file" id="fileInput" accept="image/*" style="position:absolute;left:-9999px;">
@@ -162,21 +176,31 @@ async function dragEnd(e) {
   }
   cctx.putImageData(imgData, 0, 0);
 
-  statusEl.textContent = 'Loading OCR model (first time only)...';
   resultEl.textContent = '';
+  const engine = document.getElementById('engineSelect').value;
   const lang = document.getElementById('langSelect').value;
+  let data;
   try {
-    const worker = await Tesseract.createWorker(lang, 1, {
-      logger: m => {
-        if (m.status && m.progress != null) {
-          statusEl.textContent = m.status + ' ' + Math.round(m.progress * 100) + '%';
+    if (engine === 'claude') {
+      const sk = localStorage.getItem('ocr_sk');
+      if (!sk) { statusEl.textContent = 'Paste your Claude SK above and press Save first.'; return; }
+      statusEl.textContent = 'Sending to Claude vision...';
+      const text = await claudeOCR(cropCanvas, sk);
+      data = { text };
+    } else {
+      statusEl.textContent = 'Loading OCR model (first time only)...';
+      const worker = await Tesseract.createWorker(lang, 1, {
+        logger: m => {
+          if (m.status && m.progress != null) {
+            statusEl.textContent = m.status + ' ' + Math.round(m.progress * 100) + '%';
+          }
         }
-      }
-    });
-    // PSM 6 = treat as a single uniform block of text (right for a user-cropped region)
-    await worker.setParameters({ tessedit_pageseg_mode: '6' });
-    const { data } = await worker.recognize(cropCanvas);
-    await worker.terminate();
+      });
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      const r = await worker.recognize(cropCanvas);
+      await worker.terminate();
+      data = r.data;
+    }
     resultEl.textContent = data.text.trim() || '(no text detected — try: a bigger box, a flatter/better-lit photo, or hold the camera straight above the page)';
     if (data.text.trim()) {
       try {
@@ -199,6 +223,61 @@ canvas.addEventListener('mouseup', dragEnd);
 canvas.addEventListener('touchstart', dragStart, { passive: false });
 canvas.addEventListener('touchmove', dragMove, { passive: false });
 canvas.addEventListener('touchend', dragEnd, { passive: false });
+
+// Engine / SK UI
+const engineSel = document.getElementById('engineSelect');
+const langLabel = document.getElementById('langLabel');
+const skRow = document.getElementById('skRow');
+const skInput = document.getElementById('skInput');
+const skStatus = document.getElementById('skStatus');
+
+function refreshEngineUI() {
+  const isClaude = engineSel.value === 'claude';
+  langLabel.style.display = isClaude ? 'none' : '';
+  skRow.style.display = isClaude ? '' : 'none';
+  if (isClaude) {
+    const saved = localStorage.getItem('ocr_sk');
+    skStatus.textContent = saved ? '✓ SK saved' : 'Not set';
+  }
+}
+engineSel.onchange = refreshEngineUI;
+document.getElementById('saveSk').onclick = () => {
+  const v = skInput.value.trim();
+  if (!v.startsWith('sk-ant-')) { skStatus.textContent = 'Invalid — should start with sk-ant-'; return; }
+  localStorage.setItem('ocr_sk', v);
+  skInput.value = '';
+  skStatus.textContent = '✓ SK saved';
+};
+refreshEngineUI();
+
+async function claudeOCR(canvasEl, sk) {
+  // Compress canvas to JPEG to keep upload small
+  const dataUrl = canvasEl.toDataURL('image/jpeg', 0.85);
+  const base64 = dataUrl.split(',')[1];
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': sk,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-5-20250929',
+      max_tokens: 2000,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: 'Extract all text from this image exactly as it appears. Preserve Tamil, English, and any other scripts, line by line. Return only the extracted text with no commentary, no quotes, no markdown.' }
+        ]
+      }]
+    })
+  });
+  const j = await res.json();
+  if (j.error) throw new Error(j.error.message || 'Claude API error');
+  return j.content[0].text;
+}
 </script>
 </body>
 </html>
