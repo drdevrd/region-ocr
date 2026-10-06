@@ -24,8 +24,8 @@
 <label style="font-size:14px;">Language: </label>
 <select id="langSelect">
   <option value="eng">English</option>
-  <option value="tam" selected>Tamil</option>
-  <option value="tam+eng">Tamil + English</option>
+  <option value="tam">Tamil</option>
+  <option value="tam+eng" selected>Tamil + English</option>
 </select>
 
 <label for="fileInput" id="dropzone" style="display:block;">Tap to pick an image or take a photo</label>
@@ -141,27 +141,43 @@ async function dragEnd(e) {
   // Map displayed-canvas coords back to full-res image coords
   const realX = x / scale, realY = y / scale, realW = w / scale, realH = h / scale;
 
-  // Crop at full resolution, then upscale 2x for better OCR on small text
-  const upscale = 2;
+  // Crop at full resolution, then upscale 3x — Tesseract does much better on bigger glyphs
+  const upscale = 3;
   const cropCanvas = document.createElement('canvas');
   cropCanvas.width = realW * upscale;
   cropCanvas.height = realH * upscale;
   const cctx = cropCanvas.getContext('2d');
   cctx.imageSmoothingEnabled = true;
+  cctx.imageSmoothingQuality = 'high';
   cctx.drawImage(img, realX, realY, realW, realH, 0, 0, cropCanvas.width, cropCanvas.height);
 
-  statusEl.textContent = 'Loading Tamil model (first time only, ~5-15MB)...';
+  // Preprocess: convert to grayscale and boost contrast — helps on photos vs scans
+  const imgData = cctx.getImageData(0, 0, cropCanvas.width, cropCanvas.height);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    // Simple contrast stretch: anything > 170 → white, < 100 → black, linear between
+    const v = gray > 170 ? 255 : gray < 100 ? 0 : (gray - 100) * 255 / 70;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  cctx.putImageData(imgData, 0, 0);
+
+  statusEl.textContent = 'Loading OCR model (first time only)...';
   resultEl.textContent = '';
   const lang = document.getElementById('langSelect').value;
   try {
-    const { data } = await Tesseract.recognize(cropCanvas.toDataURL(), lang, {
+    const worker = await Tesseract.createWorker(lang, 1, {
       logger: m => {
         if (m.status && m.progress != null) {
           statusEl.textContent = m.status + ' ' + Math.round(m.progress * 100) + '%';
         }
       }
     });
-    resultEl.textContent = data.text.trim() || '(no text detected in that region)';
+    // PSM 6 = treat as a single uniform block of text (right for a user-cropped region)
+    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+    const { data } = await worker.recognize(cropCanvas);
+    await worker.terminate();
+    resultEl.textContent = data.text.trim() || '(no text detected — try: a bigger box, a flatter/better-lit photo, or hold the camera straight above the page)';
     if (data.text.trim()) {
       try {
         await navigator.clipboard.writeText(data.text.trim());
